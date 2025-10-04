@@ -1,0 +1,42 @@
+# Environnements et secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.build/
+.dist/
+.pytest_cache/
+.cache/
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Sorties / artefacts
+*.docx
+*.xlsx
+/resultats*/
+/tmp/
+*.log
+
+# Virtualenvs
+.venv/
+venv/
+ENV/
+
+# Node (si jamais)
+node_modules/
+
+
+
+

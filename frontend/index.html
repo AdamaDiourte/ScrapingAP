@@ -1,0 +1,292 @@
+<!-- <!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Appels à Projet - UI</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#f6f7fb; margin:0; padding:24px; }
+    .container { max-width: 900px; margin: 0 auto; background:#fff; border-radius:12px; padding:24px; box-shadow:0 8px 24px rgba(0,0,0,0.08); }
+    h1 { margin: 0 0 12px; font-size: 24px; }
+    .row { display: grid; gap: 12px; margin: 12px 0; }
+    input, select { padding: 10px 12px; border: 1px solid #dcdfe6; border-radius: 8px; font-size: 14px; }
+    .actions { display:flex; gap: 12px; align-items:center; }
+    button { background:#2563eb; color:white; border:none; padding:10px 16px; border-radius:8px; font-weight:600; cursor:pointer; }
+    button:hover { background:#1d4ed8; }
+    .log { white-space: pre-wrap; background:#0b1020; color:#e5e7eb; padding:12px; border-radius:8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:12px; }
+    .note { color:#475569; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const html = htm.bind(React.createElement);
+
+    function App() {
+      const [apiKey, setApiKey] = React.useState("");
+      const [provider, setProvider] = React.useState("openai");
+      const [file, setFile] = React.useState(null);
+      const [busy, setBusy] = React.useState(false);
+      const [logs, setLogs] = React.useState("Ready.\n");
+      // Utilise la même origine quand servi via FastAPI, sinon fallback vers 127.0.0.1:8000
+      const API_BASE = (location.host === '127.0.0.1:8000' || location.host === 'localhost:8000') ? '' : 'http://127.0.0.1:8000';
+      const BACKEND_URL = API_BASE || location.origin;
+
+      const ts = () => new Date().toISOString().replace('T', ' ').replace('Z', '');
+      const appendLog = (line) => setLogs((l) => l + `[${ts()}] ` + line + "\n");
+      const clearLogs = () => setLogs("");
+
+      const logResponseMeta = async (res) => {
+        try {
+          appendLog(`HTTP ${res.status} ${res.statusText}`);
+          appendLog(`Headers: content-type=${res.headers.get('content-type') || '?'} content-length=${res.headers.get('content-length') || '?'} cors=${res.headers.get('access-control-allow-origin') || '?'} disposition=${res.headers.get('content-disposition') || '?'}`);
+        } catch {}
+      };
+
+      const healthCheck = async () => {
+        appendLog(`Ping /health → ${API_BASE || ''}/health`);
+        const t0 = performance.now();
+        try {
+          const res = await fetch((API_BASE || '') + "/health", { method: "GET" });
+          await logResponseMeta(res);
+          const txt = await res.text();
+          appendLog(`Body: ${txt}`);
+          appendLog(`Health OK in ${(performance.now()-t0).toFixed(0)} ms`);
+          return true;
+        } catch (err) {
+          appendLog(`Health FAILED: ${err && (err.stack || err.message)}`);
+          return false;
+        }
+      };
+
+      const onSubmit = async (e) => {
+        e.preventDefault();
+        if (!apiKey) { alert("Clé API requise"); return; }
+        if (!file) { alert("Fichier Excel requis"); return; }
+        setBusy(true);
+        appendLog(`Env: origin=${location.origin || 'file://'} ua=${navigator.userAgent}`);
+        appendLog(`Fichier: name=${file.name} size=${file.size} type=${file.type || '?'} fournisseur=${provider}`);
+        appendLog("Diagnostic initial...");
+        await healthCheck();
+        appendLog("POST /process...");
+        try {
+          const form = new FormData();
+          form.append("api_key", apiKey);
+          form.append("api_provider", provider);
+          form.append("excel_file", file);
+          const t0 = performance.now();
+          const res = await fetch((API_BASE || '') + "/process", { method: "POST", body: form });
+          await logResponseMeta(res);
+          if (!res.ok) {
+            const txt = await res.text();
+            appendLog("Erreur: " + txt);
+            alert("Erreur: " + txt);
+            return;
+          }
+          const blob = await res.blob();
+          appendLog(`Réponse reçue en ${(performance.now()-t0).toFixed(0)} ms, blob.size=${blob.size} bytes`);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'resultats_appels_projet.docx';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          appendLog("Téléchargement démarré.");
+        } catch (err) {
+          const msg = err && (err.stack || err.message || String(err));
+          appendLog("Exception: " + msg);
+          appendLog("Astuce: si c'est 'TypeError: Failed to fetch', vérifiez que le backend répond (santé OK), que votre antivirus/firewall autorise http://127.0.0.1:8000, et que l'URL n'est pas bloquée.");
+          alert("Exception: " + msg);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return html`<div className="container">
+        <h1>Appels à Projet - Interface</h1>
+        <div className="note">Backend: <code>${BACKEND_URL}</code> — Lancez: <code>python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000</code></div>
+        <form onSubmit=${onSubmit} className="row">
+          <div className="row">
+            <label>Clé API</label>
+            <input type="text" value=${apiKey} onChange=${e=>setApiKey(e.target.value)} placeholder="Votre clé API" />
+          </div>
+          <div className="row">
+            <label>Fournisseur IA</label>
+            <select value=${provider} onChange=${e=>setProvider(e.target.value)}>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </div>
+          <div className="row">
+            <label>Fichier Excel</label>
+            <input type="file" accept=".xls,.xlsx" onChange=${e=>setFile(e.target.files[0])} />
+          </div>
+          <div className="actions">
+            <button type="submit" disabled=${busy}>${busy ? 'Traitement...' : 'Lancer la recherche'}</button>
+            <button type="button" disabled=${busy} onClick=${healthCheck}>Diagnostics</button>
+            <button type="button" disabled=${busy} onClick=${clearLogs}>Effacer logs</button>
+          </div>
+        </form>
+        <div className="row">
+          <div className="log">${logs}</div>
+        </div>
+      </div>`;
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(html`<${App} />`);
+  </script>
+</body>
+</html>
+
+
+ -->
+
+
+
+ 
+
+
+
+
+
+
+
+ <!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Appels à Projet - UI</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#f6f7fb; margin:0; padding:24px; }
+    .container { max-width: 900px; margin: 0 auto; background:#fff; border-radius:12px; padding:24px; box-shadow:0 8px 24px rgba(0,0,0,0.08); }
+    h1 { margin: 0 0 12px; font-size: 24px; }
+    .row { display: grid; gap: 12px; margin: 12px 0; }
+    input, select { padding: 10px 12px; border: 1px solid #dcdfe6; border-radius: 8px; font-size: 14px; }
+    .actions { display:flex; gap: 12px; align-items:center; }
+    button { background:#2563eb; color:white; border:none; padding:10px 16px; border-radius:8px; font-weight:600; cursor:pointer; }
+    button:hover { background:#1d4ed8; }
+    .log { white-space: pre-wrap; background:#0b1020; color:#e5e7eb; padding:12px; border-radius:8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:12px; }
+    .note { color:#475569; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const html = htm.bind(React.createElement);
+
+    // ✅ Fix API_BASE pour éviter tout 8001
+    const params = new URLSearchParams(location.search);
+    let API_BASE = params.get("api") || "http://127.0.0.1:8000";
+    if (API_BASE.includes(":8001")) API_BASE = "http://127.0.0.1:8000";
+    console.log("API_BASE =", API_BASE);
+
+    function App() {
+      const [apiKey, setApiKey] = React.useState("");
+      const [provider, setProvider] = React.useState("openai");
+      const [file, setFile] = React.useState(null);
+      const [busy, setBusy] = React.useState(false);
+      const [logs, setLogs] = React.useState("Ready.\n");
+
+      const ts = () => new Date().toISOString().replace('T', ' ').replace('Z', '');
+      const appendLog = (line) => setLogs((l) => l + `[${ts()}] ` + line + "\n");
+      const clearLogs = () => setLogs("");
+
+      const logResponseMeta = async (res) => {
+        try {
+          appendLog(`HTTP ${res.status} ${res.statusText}`);
+          appendLog(`Headers: content-type=${res.headers.get('content-type') || '?'} cors=${res.headers.get('access-control-allow-origin') || '?'}`);
+        } catch {}
+      };
+
+      const healthCheck = async () => {
+        appendLog(`Ping /health → ${API_BASE}/health`);
+        try {
+          const res = await fetch(API_BASE + "/health");
+          await logResponseMeta(res);
+          const txt = await res.text();
+          appendLog(`Body: ${txt}`);
+          return true;
+        } catch (err) {
+          appendLog(`Health FAILED: ${err.message}`);
+          return false;
+        }
+      };
+
+      const onSubmit = async (e) => {
+        e.preventDefault();
+        if (!apiKey) { alert("Clé API requise"); return; }
+        if (!file) { alert("Fichier Excel requis"); return; }
+        setBusy(true);
+        appendLog(`Env: origin=${location.origin} ua=${navigator.userAgent}`);
+        appendLog(`Fichier: name=${file.name} size=${file.size} fournisseur=${provider}`);
+        await healthCheck();
+        appendLog("POST /process...");
+        try {
+          const form = new FormData();
+          form.append("api_key", apiKey);
+          form.append("api_provider", provider);
+          form.append("excel_file", file);
+
+          const res = await fetch(API_BASE + "/process", { method: "POST", body: form });
+          await logResponseMeta(res);
+
+          if (!res.ok) {
+            appendLog("Erreur: " + (await res.text()));
+            return;
+          }
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'resultats_appels_projet.docx';
+          a.click();
+          appendLog("Téléchargement démarré.");
+        } catch (err) {
+          appendLog("Exception: " + err.message);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return html`<div className="container">
+        <h1>Appels à Projet - Interface</h1>
+        <div className="note">Backend attendu: <code>${API_BASE}</code></div>
+        <form onSubmit=${onSubmit} className="row">
+          <div className="row">
+            <label>Clé API</label>
+            <input type="text" value=${apiKey} onChange=${e=>setApiKey(e.target.value)} placeholder="Votre clé API" />
+          </div>
+          <div className="row">
+            <label>Fournisseur IA</label>
+            <select value=${provider} onChange=${e=>setProvider(e.target.value)}>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </div>
+          <div className="row">
+            <label>Fichier Excel</label>
+            <input type="file" accept=".xls,.xlsx" onChange=${e=>setFile(e.target.files[0])} />
+          </div>
+          <div className="actions">
+            <button type="submit" disabled=${busy}>${busy ? 'Traitement...' : 'Lancer la recherche'}</button>
+            <button type="button" disabled=${busy} onClick=${healthCheck}>Diagnostics</button>
+            <button type="button" disabled=${busy} onClick=${clearLogs}>Effacer logs</button>
+          </div>
+        </form>
+        <div className="row"><div className="log">${logs}</div></div>
+      </div>`;
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(html`<${App} />`);
+  </script>
+</body>
+</html>
