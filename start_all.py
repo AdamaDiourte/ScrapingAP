@@ -109,11 +109,17 @@ def main() -> None:
     ready = wait_backend_ready("http://127.0.0.1:8000/health", timeout_sec=40)
     if not ready:
         logging.warning("Le backend ne répond pas encore, tentative d'ouverture du frontend quand même")
-    if os.path.isfile(FRONTEND_INDEX):
-        open_frontend(FRONTEND_INDEX)
-        logging.info("Interface ouverte. Si rien ne s'ouvre, ouvrez manuellement: %s", FRONTEND_INDEX)
-    else:
-        logging.error("Fichier frontend introuvable: %s", FRONTEND_INDEX)
+    # Ouvre l'interface servie par FastAPI pour bénéficier du no-cache et du live-reload
+    try:
+        webbrowser.open_new("http://127.0.0.1:8000/")
+        logging.info("Interface HTTP ouverte sur http://127.0.0.1:8000/")
+    except Exception:
+        # fallback vers le fichier si l'ouverture HTTP échoue
+        if os.path.isfile(FRONTEND_INDEX):
+            open_frontend(FRONTEND_INDEX)
+            logging.info("Interface locale ouverte: %s", FRONTEND_INDEX)
+        else:
+            logging.error("Fichier frontend introuvable: %s", FRONTEND_INDEX)
 
     # garde le processus backend en vie
     try:

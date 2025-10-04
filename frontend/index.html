@@ -27,7 +27,7 @@
 
     function App() {
       const [apiKey, setApiKey] = React.useState("");
-      const [provider, setProvider] = React.useState("openai");
+      const [provider, setProvider] = React.useState("openrouter");
       const [file, setFile] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       const [logs, setLogs] = React.useState("Ready.\n");
@@ -127,9 +127,9 @@
           <div className="row">
             <label>Fournisseur IA</label>
             <select value=${provider} onChange=${e=>setProvider(e.target.value)}>
+              <option value="openrouter">OpenRouter</option>
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
-              <option value="openrouter">OpenRouter</option>
             </select>
           </div>
           <div className="row">
@@ -149,6 +149,23 @@
     }
 
     ReactDOM.createRoot(document.getElementById('root')).render(html`<${App} />`);
+
+    // Live Reload (dev): recharge la page si le backend signale un changement
+    try {
+      const ev = new EventSource((typeof API_BASE !== 'undefined' ? API_BASE : 'http://127.0.0.1:8000') + '/dev/reload');
+      let last = null;
+      ev.onmessage = (e) => {
+        if (last === null) {
+          last = e.data;
+          return;
+        }
+        if (e && e.data && e.data !== String(last)) {
+          last = e.data;
+          location.reload();
+        }
+      };
+      ev.onerror = () => { /* silencieux en prod */ };
+    } catch {}
   </script>
 </body>
 </html>
@@ -213,7 +230,15 @@
       const logResponseMeta = async (res) => {
         try {
           appendLog(`HTTP ${res.status} ${res.statusText}`);
+          const aiProvider = res.headers.get('x-ai-provider') || '';
+          const aiCalls = res.headers.get('x-ai-calls') || '';
+          const aiSuccess = res.headers.get('x-ai-success') || '';
+          const aiHeuristic = res.headers.get('x-ai-heuristic-used') || '';
+          const aiErrors = res.headers.get('x-ai-errors') || '';
           appendLog(`Headers: content-type=${res.headers.get('content-type') || '?'} cors=${res.headers.get('access-control-allow-origin') || '?'}`);
+          if (aiProvider || aiCalls || aiSuccess || aiHeuristic || aiErrors) {
+            appendLog(`IA: provider=${aiProvider || '-'} calls=${aiCalls || '-'} success=${aiSuccess || '-'} heuristic=${aiHeuristic || '-'}${aiErrors ? ' errors='+aiErrors : ''}`);
+          }
         } catch {}
       };
 
@@ -223,6 +248,13 @@
           const res = await fetch(API_BASE + "/health");
           await logResponseMeta(res);
           const txt = await res.text();
+          try {
+            const j = JSON.parse(txt);
+            if (j && j.ai) {
+              const ia = j.ai;
+              appendLog(`IA(last): provider=${ia.provider || '-'} calls=${ia.ai_calls || '-'} success=${ia.ai_success || '-'} heuristic=${ia.heuristic_used || '-'}${ia.ai_errors ? ' errors='+ia.ai_errors : ''}`);
+            }
+          } catch {}
           appendLog(`Body: ${txt}`);
           return true;
         } catch (err) {

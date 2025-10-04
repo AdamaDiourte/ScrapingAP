@@ -26,15 +26,86 @@ class AppelsProjetFinder:
     - génération d'un document Word
     """
 
-    def __init__(self, api_key: str, api_provider: str = "openai") -> None:
-        key_clean = (api_key or "").strip()
+    def __init__(self, api_key: str, api_provider: str = "openrouter") -> None:
+        # Résolution clé: robuste si UI vide – env/.env + alias + déquotage
+        def _dequote(val: str) -> str:
+            v = val.strip()
+            if (v.startswith("\"") and v.endswith("\"")) or (v.startswith("'") and v.endswith("'")):
+                return v[1:-1].strip()
+            return v
+
+        def _first_nonempty(values_list):
+            for v in values_list:
+                if v and str(v).strip():
+                    return _dequote(str(v))
+            return ""
+
+        key_clean = _dequote(api_key or "")
+        provider_clean = (api_provider or "").strip().lower()
+
+        if not key_clean:
+            env = os.environ
+            # Prépare listes d'alias
+            or_alias_env = [
+                env.get("OPENROUTER_API_KEY"), env.get("OPEN_ROUTER_API_KEY"), env.get("OPENROUTER_TOKEN"),
+                env.get("OPENROUTER"), env.get("OR_API_KEY"),
+            ]
+            oa_alias_env = [
+                env.get("OPENAI_API_KEY"), env.get("OPEN_AI_API_KEY"), env.get("OPENAI"), env.get("OA_API_KEY"),
+            ]
+            an_alias_env = [
+                env.get("ANTHROPIC_API_KEY"), env.get("ANTHROPIC"), env.get("CLAUDE_API_KEY"),
+            ]
+            generic_env = [
+                env.get("AP_FINDER_API_KEY"), env.get("AI_API_KEY"), env.get("LLM_API_KEY"),
+            ]
+
+            # 1) env selon provider
+            if provider_clean == "openrouter":
+                key_clean = _first_nonempty(or_alias_env)
+            elif provider_clean == "openai":
+                key_clean = _first_nonempty(oa_alias_env)
+            elif provider_clean == "anthropic":
+                key_clean = _first_nonempty(an_alias_env)
+
+            # 2) env génériques si pas trouvé
+            if not key_clean:
+                key_clean = _first_nonempty(generic_env + or_alias_env + oa_alias_env + an_alias_env)
+
+            # 3) .env si toujours vide
+            if not key_clean:
+                try:
+                    from dotenv import find_dotenv, dotenv_values  # type: ignore
+                    env_path = find_dotenv(usecwd=True) or ".env"
+                    values = dotenv_values(env_path)
+                    def gv(name: str) -> str:
+                        return _dequote(str(values.get(name) or ""))  # type: ignore[attr-defined]
+                    or_alias = [gv("OPENROUTER_API_KEY"), gv("OPEN_ROUTER_API_KEY"), gv("OPENROUTER_TOKEN"), gv("OPENROUTER"), gv("OR_API_KEY")]
+                    oa_alias = [gv("OPENAI_API_KEY"), gv("OPEN_AI_API_KEY"), gv("OPENAI"), gv("OA_API_KEY")]
+                    an_alias = [gv("ANTHROPIC_API_KEY"), gv("ANTHROPIC"), gv("CLAUDE_API_KEY")]
+                    generic = [gv("AP_FINDER_API_KEY"), gv("AI_API_KEY"), gv("LLM_API_KEY")]
+                    if provider_clean == "openrouter":
+                        key_clean = _first_nonempty(or_alias)
+                    elif provider_clean == "openai":
+                        key_clean = _first_nonempty(oa_alias)
+                    elif provider_clean == "anthropic":
+                        key_clean = _first_nonempty(an_alias)
+                    if not key_clean:
+                        key_clean = _first_nonempty(generic + or_alias + oa_alias + an_alias)
+                except Exception:
+                    pass
+
         self.api_key = key_clean
-        # Détection automatique des clés OpenRouter (sk-or-...)
-        if key_clean.lower().startswith("sk-or-"):
+        # Détection automatique des clés
+        if (key_clean or "").lower().startswith("sk-or-"):
             self.api_provider = "openrouter"
+        elif (key_clean or "").lower().startswith("sk-ant-"):
+            self.api_provider = "anthropic"
         else:
-            self.api_provider = api_provider
+            self.api_provider = (provider_clean or "openrouter")
         self.results: List[Dict[str, Any]] = []
+        masked = (self.api_key[:4] + "…" + self.api_key[-4:]) if self.api_key and len(self.api_key) >= 8 else ("set" if self.api_key else "(empty)")
+        logger.info("Finder ready provider=%s key=%s", self.api_provider, masked)
         # Compteurs et diagnostics IA
         self.ai_calls: int = 0
         self.ai_success: int = 0

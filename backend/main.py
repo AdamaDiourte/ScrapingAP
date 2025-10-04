@@ -5,11 +5,16 @@ import tempfile
 import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+from starlette.responses import StreamingResponse
+try:
+    from watchfiles import awatch  # type: ignore
+except Exception:  # pragma: no cover
+    awatch = None  # type: ignore
 
 from .finder import AppelsProjetFinder
 
@@ -44,11 +49,14 @@ app.add_middleware(
 
 
 _heartbeat_task: asyncio.Task | None = None
+_reload_watch_task: asyncio.Task | None = None
+_reload_version: int = 0
+_last_ai_info: dict[str, str] | None = None
 
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    global _heartbeat_task
+    global _heartbeat_task, _reload_watch_task, _reload_version
     async def _heartbeat() -> None:
         while True:
             logger.info("Heartbeat: backend alive")
@@ -58,19 +66,60 @@ async def _on_startup() -> None:
     except Exception:
         logger.exception("Impossible de démarrer le heartbeat")
 
+    # Démarre la surveillance des fichiers frontend pour Live Reload (dev)
+    if awatch is not None:
+        async def _watch_frontend() -> None:
+            nonlocal_logger = logging.getLogger("frontend-watch")
+            try:
+                global _reload_version
+                async for _ in awatch("frontend"):
+                    _reload_version += 1
+                    nonlocal_logger.info("Frontend changé → version=%s", _reload_version)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                nonlocal_logger.exception("Watch frontend échoué")
+
+        try:
+            _reload_watch_task = asyncio.create_task(_watch_frontend())
+        except Exception:
+            logger.exception("Impossible de démarrer le watcher frontend")
+
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
-    global _heartbeat_task
+    global _heartbeat_task, _reload_watch_task
     if _heartbeat_task is not None:
         try:
             _heartbeat_task.cancel()
         except Exception:
             pass
+    if _reload_watch_task is not None:
+        try:
+            _reload_watch_task.cancel()
+        except Exception:
+            pass
 
 @app.get("/health")
-def health() -> dict:
-    return {"status": "ok"}
+def health() -> JSONResponse:
+    headers: dict[str, str] = {}
+    content: dict[str, object] = {"status": "ok"}
+    try:
+        if _last_ai_info:
+            content["ai"] = _last_ai_info
+            if _last_ai_info.get("provider"):
+                headers["X-AI-Provider"] = _last_ai_info.get("provider", "")
+            if _last_ai_info.get("ai_calls"):
+                headers["X-AI-Calls"] = _last_ai_info.get("ai_calls", "")
+            if _last_ai_info.get("ai_success"):
+                headers["X-AI-Success"] = _last_ai_info.get("ai_success", "")
+            if _last_ai_info.get("heuristic_used"):
+                headers["X-AI-Heuristic-Used"] = _last_ai_info.get("heuristic_used", "")
+            if _last_ai_info.get("ai_errors"):
+                headers["X-AI-Errors"] = _last_ai_info.get("ai_errors", "")
+    except Exception:
+        pass
+    return JSONResponse(content=content, headers=headers)
 
 
 @app.post("/process")
@@ -93,8 +142,60 @@ async def process(
         logger.info("Fichier Excel sauvegardé: %s (%d octets)", in_path, len(content))
 
         # Si une clé n'est pas fournie par l'UI, tente depuis l'environnement (.env)
-        effective_key = (api_key or os.environ.get("AP_FINDER_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or "").strip()
-        effective_provider = api_provider
+        effective_provider = (api_provider or "").strip()
+        env = os.environ
+        effective_key = api_key.strip() if api_key else ""
+        key_source = "ui" if effective_key else ""
+
+        # Priorité: clé spécifique au fournisseur sélectionné (env)
+        if not effective_key:
+            prov = effective_provider.lower()
+            if prov == "openrouter":
+                effective_key = (env.get("OPENROUTER_API_KEY") or "").strip()
+                key_source = "env:OPENROUTER_API_KEY" if effective_key else key_source
+            elif prov == "openai":
+                effective_key = (env.get("OPENAI_API_KEY") or "").strip()
+                key_source = "env:OPENAI_API_KEY" if effective_key else key_source
+            elif prov == "anthropic":
+                effective_key = (env.get("ANTHROPIC_API_KEY") or "").strip()
+                key_source = "env:ANTHROPIC_API_KEY" if effective_key else key_source
+
+        # Lecture .env directe si toujours vide (provider-spécifique)
+        if not effective_key:
+            try:
+                from dotenv import find_dotenv, dotenv_values  # type: ignore
+                env_path = find_dotenv(usecwd=True) or ".env"
+                values = dotenv_values(env_path)
+                prov = effective_provider.lower()
+                if prov == "openrouter":
+                    effective_key = (values.get("OPENROUTER_API_KEY") or "").strip()  # type: ignore[attr-defined]
+                    key_source = "dotenv:OPENROUTER_API_KEY" if effective_key else key_source
+                elif prov == "openai":
+                    effective_key = (values.get("OPENAI_API_KEY") or "").strip()  # type: ignore[attr-defined]
+                    key_source = "dotenv:OPENAI_API_KEY" if effective_key else key_source
+                elif prov == "anthropic":
+                    effective_key = (values.get("ANTHROPIC_API_KEY") or "").strip()  # type: ignore[attr-defined]
+                    key_source = "dotenv:ANTHROPIC_API_KEY" if effective_key else key_source
+                # Fallback générique AP_FINDER_API_KEY si rien (utilisé aussi pour auto-détection)
+                if not effective_key:
+                    generic = (values.get("AP_FINDER_API_KEY") or "").strip()  # type: ignore[attr-defined]
+                    if generic:
+                        effective_key = generic
+                        key_source = "dotenv:AP_FINDER_API_KEY"
+            except Exception:
+                pass
+
+        # Auto-détection du provider si la clé vient de l'environnement/.env (UI vide)
+        if key_source and key_source != "ui":
+            k = effective_key.lower()
+            if k.startswith("sk-or-"):
+                effective_provider = "openrouter"
+            elif k.startswith("sk-ant-"):
+                effective_provider = "anthropic"
+            elif not effective_provider:
+                effective_provider = "openai"
+        
+        logger.info("Clé IA chargée via=%s provider=%s", key_source or "(none)", (effective_provider or ""))
 
         # Si toujours vide, essaye de lire le fichier .env directement (parfois non chargé selon l'environnement)
         if not effective_key:
@@ -102,7 +203,23 @@ async def process(
                 from dotenv import find_dotenv, dotenv_values  # type: ignore
                 env_path = find_dotenv(usecwd=True) or ".env"
                 values = dotenv_values(env_path)
-                effective_key = (values.get("AP_FINDER_API_KEY") or values.get("OPENAI_API_KEY") or values.get("ANTHROPIC_API_KEY") or "").strip()  # type: ignore[attr-defined]
+                # Priorité au provider courant
+                provider_lower = (effective_provider or "").lower()
+                if provider_lower == "openrouter":
+                    effective_key = (values.get("OPENROUTER_API_KEY") or "").strip()  # type: ignore[attr-defined]
+                elif provider_lower == "openai":
+                    effective_key = (values.get("OPENAI_API_KEY") or "").strip()  # type: ignore[attr-defined]
+                elif provider_lower == "anthropic":
+                    effective_key = (values.get("ANTHROPIC_API_KEY") or "").strip()  # type: ignore[attr-defined]
+                # Fallbacks
+                if not effective_key:
+                    effective_key = (
+                        values.get("AP_FINDER_API_KEY")
+                        or values.get("OPENROUTER_API_KEY")
+                        or values.get("OPENAI_API_KEY")
+                        or values.get("ANTHROPIC_API_KEY")
+                        or ""
+                    ).strip()  # type: ignore[attr-defined]
             except Exception:
                 pass
 
@@ -119,14 +236,29 @@ async def process(
 
         # Log de synthèse sur l'utilisation de l'IA
         try:
-            ai_info = {
-                "provider": finder.api_provider,
+            ai_info_raw = {
+                "provider": getattr(finder, "api_provider", None),
                 "ai_calls": getattr(finder, "ai_calls", None),
                 "ai_success": getattr(finder, "ai_success", None),
                 "heuristic_used": getattr(finder, "heuristic_used", None),
                 "ai_errors": getattr(finder, "ai_errors", None),
             }
-            logger.info("Synthèse IA: %s", ai_info)
+            logger.info("Synthèse IA: %s", ai_info_raw)
+            # Normalise et mémorise pour /health et diagnostics
+            errors_val = ai_info_raw.get("ai_errors")
+            if isinstance(errors_val, (list, tuple)):
+                errors_str = "; ".join(str(x) for x in errors_val)
+            else:
+                errors_str = str(errors_val or "")
+            global _last_ai_info
+            _last_ai_info = {
+                "provider": str(ai_info_raw.get("provider") or ""),
+                "ai_calls": str(ai_info_raw.get("ai_calls") or ""),
+                "ai_success": str(ai_info_raw.get("ai_success") or ""),
+                "heuristic_used": str(ai_info_raw.get("heuristic_used") or ""),
+                "ai_errors": errors_str,
+                "key_source": key_source or "",
+            }
         except Exception:
             pass
 
@@ -162,6 +294,15 @@ async def process(
             errors_val = getattr(finder, "ai_errors", None)
             if errors_val:
                 headers["X-AI-Errors"] = "; ".join(errors_val)[:900]
+            # Source de la clé si connue
+            try:
+                # réutilise la dernière info si dispo
+                if _last_ai_info:
+                    src = _last_ai_info.get("key_source") or ""
+                    if src:
+                        headers["X-AI-Key-Source"] = src
+            except Exception:
+                pass
         except Exception:
             pass
         return Response(
@@ -182,4 +323,42 @@ app.mount(
     StaticFiles(directory="frontend", html=True),
     name="frontend",
 )
+
+
+# En-têtes no-cache pour HTML/CSS/JS afin d'éviter le cache navigateur en dev
+@app.middleware("http")
+async def _no_cache_static(request: Request, call_next):  # type: ignore[override]
+    response = await call_next(request)
+    try:
+        ctype = response.headers.get("content-type", "")
+        if "text/html" in ctype or "javascript" in ctype or "text/css" in ctype:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+    except Exception:
+        pass
+    return response
+
+
+# Endpoint SSE pour Live Reload côté frontend
+@app.get("/dev/reload")
+async def dev_reload(request: Request) -> StreamingResponse:
+    async def event_stream():
+        last_sent = -1
+        # ping initial pour établir la connexion
+        yield ": connected\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                if _reload_version != last_sent:
+                    last_sent = _reload_version
+                    yield f"data: {last_sent}\n\n"
+                await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                await asyncio.sleep(1.0)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
