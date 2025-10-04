@@ -20,6 +20,12 @@ def ensure_paths() -> None:
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     ensure_paths()
+    # Charge les variables depuis un fichier .env si présent
+    try:
+        from dotenv import load_dotenv  # type: ignore
+        load_dotenv()
+    except Exception:
+        pass
     import uvicorn  # type: ignore
 
     host = os.environ.get("HOST", "127.0.0.1")

@@ -99,6 +99,12 @@ def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
     add_paths()
     ensure_installed()
+    # Charge un éventuel .env pour les clés API locales
+    try:
+        from dotenv import load_dotenv  # type: ignore
+        load_dotenv()
+    except Exception:
+        pass
     proc = start_backend()
     ready = wait_backend_ready("http://127.0.0.1:8000/health", timeout_sec=40)
     if not ready:
@@ -121,6 +127,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 

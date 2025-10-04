@@ -52,6 +52,16 @@
         try {
           const res = await fetch((API_BASE || '') + "/health", { method: "GET" });
           await logResponseMeta(res);
+          // Affiche les diagnostics IA via les en-têtes de réponse
+          try {
+            const aiProvider = res.headers.get('x-ai-provider') || '-';
+            const aiCalls = res.headers.get('x-ai-calls') || '-';
+            const aiSuccess = res.headers.get('x-ai-success') || '-';
+            const aiHeuristic = res.headers.get('x-ai-heuristic-used') || '-';
+            const aiErrors = res.headers.get('x-ai-errors') || '';
+            appendLog(`IA: provider=${aiProvider} calls=${aiCalls} success=${aiSuccess} heuristic=${aiHeuristic}`);
+            if (aiErrors) appendLog(`IA errors: ${aiErrors}`);
+          } catch {}
           const txt = await res.text();
           appendLog(`Body: ${txt}`);
           appendLog(`Health OK in ${(performance.now()-t0).toFixed(0)} ms`);
@@ -64,7 +74,6 @@
 
       const onSubmit = async (e) => {
         e.preventDefault();
-        if (!apiKey) { alert("Clé API requise"); return; }
         if (!file) { alert("Fichier Excel requis"); return; }
         setBusy(true);
         appendLog(`Env: origin=${location.origin || 'file://'} ua=${navigator.userAgent}`);
@@ -112,7 +121,7 @@
         <div className="note">Backend: <code>${BACKEND_URL}</code> — Lancez: <code>python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000</code></div>
         <form onSubmit=${onSubmit} className="row">
           <div className="row">
-            <label>Clé API</label>
+            <label>Clé API <span className="note">(optionnelle si .env configuré)</span></label>
             <input type="text" value=${apiKey} onChange=${e=>setApiKey(e.target.value)} placeholder="Votre clé API" />
           </div>
           <div className="row">
@@ -120,6 +129,7 @@
             <select value=${provider} onChange=${e=>setProvider(e.target.value)}>
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
           </div>
           <div className="row">
@@ -223,7 +233,6 @@
 
       const onSubmit = async (e) => {
         e.preventDefault();
-        if (!apiKey) { alert("Clé API requise"); return; }
         if (!file) { alert("Fichier Excel requis"); return; }
         setBusy(true);
         appendLog(`Env: origin=${location.origin} ua=${navigator.userAgent}`);
@@ -262,7 +271,7 @@
         <div className="note">Backend attendu: <code>${API_BASE}</code></div>
         <form onSubmit=${onSubmit} className="row">
           <div className="row">
-            <label>Clé API</label>
+            <label>Clé API <span className="note">(optionnelle si .env configuré)</span></label>
             <input type="text" value=${apiKey} onChange=${e=>setApiKey(e.target.value)} placeholder="Votre clé API" />
           </div>
           <div className="row">
@@ -270,6 +279,7 @@
             <select value=${provider} onChange=${e=>setProvider(e.target.value)}>
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
           </div>
           <div className="row">
